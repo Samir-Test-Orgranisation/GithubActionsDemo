@@ -1,39 +1,90 @@
-name: App build
-on: push
+name: Example iOS Build
+
+on:
+  push:
+    branches:
+      - development
 
 jobs:
-  build_with_signing:
+  build-ios:
     runs-on: macos-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-      - name: Install the Apple certificate and provisioning profile
-        env:
-          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      - uses: actions/checkout@v2
+      
+      - name: configure node
+        uses: actions/setup-node@v1
+        with:
+          node-version: "14.x"
+          registry-url: "https://registry.npmjs.org"
+      
+      - name: configure ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 2.6
+
+      - name: create macos keychain
+        uses: sinoru/actions-setup-keychain@v1.0
+
+      - name: install fastlane & plugins
+        run: bundle install
+      
+      - name: homebrew & watchman
+        run: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)" && brew update && brew install watchman
+
+      - name: yarn install
+        run: yarn install
+
+      - name: re-pod
+        run: cd ios && pod deintegrate && pod install && cd ..
+
+      - name: fastlane build
+        run: fastlane ios adhoc build
+
+      # upload failure log if fails
+      - uses: actions/upload-artifact@v1
+        name: upload failure fastlane build log
+        if: failure()
+        with:
+          name: App-App.log
+          path: /Users/runner/Library/Logs/gym/ App-App.log
+
+      - name: Make Artefact
         run: |
-          # create variables
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          zip artefact.zip App.ipa App.app.dSYM.zip
+      - uses: actions/upload-artifact@v1
+        with:
+          name: artefact.zip
+          path: ./artefact.zip
 
-          # import certificate and provisioning profile from secrets
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output $CERTIFICATE_PATH
-          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode --output $PP_PATH
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+      
+      - name: Upload Beta Asset
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artefact.zip
+          asset_name: artefact.zip
+          asset_content_type: application/zip
+          
 
-          # create temporary keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # import certificate to keychain
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
+  MATCH_GIT_ACCOUNT: ${{secrets.MATCH_GIT_ACCOUNT}}
+  MATCH_GIT_BASIC_AUTHORIZATION_USER: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION_USER }}
+  MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+  MATCH_CERT_REPO: ${{secrets.MATCH_CERT_REPO}}
 
-          # apply provisioning profile
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
-      - name: Build app
+  MATCH_PASSWORD: ${{secrets.MATCH_PASSWORD}} # Match Decrypting Password
